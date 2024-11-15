@@ -69,8 +69,16 @@ button:focus-visible {
   outline: 4px auto -webkit-focus-ring-color;
 }
 
-#takeCoin, #depositCoin {
+#depositCoin {
   color: yellow;
+}
+
+.takeCoinButton {
+  color: white;
+  background-color: black;
+  border: none;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 
 @media (prefers-color-scheme: light) {

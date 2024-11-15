@@ -57,6 +57,23 @@ const cacheIconConfig = leaflet.icon({
   popupAnchor: [16, 16],
 });
 
+const tileFlyweightMap = new Map<string, GridTile>();
+
+function getTileIndices(location: { lat: number; lng: number }): GridTile {
+  return {
+    row: Math.floor(location.lat / GRID_TILE_SIZE),
+    col: Math.floor(location.lng / GRID_TILE_SIZE),
+  };
+}
+
+function getOrCreateTile(row: number, col: number): GridTile {
+  const key = `${row}:${col}`;
+  if (!tileFlyweightMap.has(key)) {
+    tileFlyweightMap.set(key, { row, col });
+  }
+  return tileFlyweightMap.get(key)!;
+}
+
 function createCache(tile: GridTile) {
   const cacheLocation = leaflet.latLng(
     (tile.row * GRID_TILE_SIZE + (tile.row + 1) * GRID_TILE_SIZE) / 2,
@@ -65,50 +82,85 @@ function createCache(tile: GridTile) {
 
   const cacheMarker = leaflet.marker(cacheLocation, { icon: cacheIconConfig });
   cacheMarker.addTo(mapInstance);
+
+  const coins = Array.from(
+    {
+      length: Math.floor(
+        luck([tile.row, tile.col, "initialValue"].toString()) * 10,
+      ),
+    },
+    (_, serial) => ({
+      i: tile.row,
+      j: tile.col,
+      serial,
+    }),
+  );
+
   cacheMarker.bindPopup(() => {
-    let cacheCoins = Math.floor(
-      luck([tile.row, tile.col, "initialValue"].toString()) * 10,
-    );
-
     const popupContent = document.createElement("div");
-    popupContent.innerHTML = `
-      <div>There is a cache here at "${tile.row},${tile.col}". It has <span id="cacheCoins">${cacheCoins}</span> coins.</div>
-      <button id="takeCoin">Take</button>
-      <button id="depositCoin">Deposit</button>`;
-
-    popupContent.querySelector<HTMLButtonElement>("#takeCoin")!
-      .addEventListener("click", () => {
-        if (cacheCoins > 0) {
-          cacheCoins--;
-          totalCoins++;
-          updateDisplay();
-        }
-      });
-
-    popupContent.querySelector<HTMLButtonElement>("#depositCoin")!
-      .addEventListener("click", () => {
-        if (totalCoins > 0) {
-          cacheCoins++;
-          totalCoins--;
-          updateDisplay();
-        }
-      });
 
     function updateDisplay() {
-      popupContent.querySelector<HTMLSpanElement>("#cacheCoins")!.textContent =
-        cacheCoins.toString();
-      inventoryPanel.innerHTML = `${totalCoins} coins!`;
+      popupContent.innerHTML = `
+        <div>Cache at "${tile.row}:${tile.col}". Available coins:</div>
+        <ul id="availableCoins">
+          ${
+        coins
+          .map(
+            (coin) => `
+              <li>${coin.i}:${coin.j}#${coin.serial} 
+                <button data-serial="${coin.serial}" class="takeCoinButton">Take</button>
+              </li>`,
+          )
+          .join("")
+      }
+        </ul>
+        <button id="depositCoin">Deposit</button>`;
+
+      popupContent.querySelectorAll<HTMLButtonElement>(".takeCoinButton")
+        .forEach((button) => {
+          button.addEventListener("click", () => {
+            const serial = parseInt(button.dataset.serial!);
+            const coinIndex = coins.findIndex((coin) => coin.serial === serial);
+
+            if (coinIndex !== -1) {
+              const [coin] = coins.splice(coinIndex, 1);
+              updateInventoryDisplay(coin);
+              updateDisplay();
+            }
+          });
+        });
+
+      popupContent.querySelector<HTMLButtonElement>("#depositCoin")!
+        .addEventListener("click", () => {
+          if (totalCoins > 0) {
+            const lastCollectedCoin = collectedCoins.pop();
+            if (lastCollectedCoin) {
+              coins.push(lastCollectedCoin);
+              totalCoins--;
+              updateInventoryDisplay();
+              updateDisplay();
+            }
+          }
+        });
     }
 
+    updateDisplay();
     return popupContent;
   });
 }
 
-function getTileIndices(location: { lat: number; lng: number }): GridTile {
-  return {
-    row: Math.floor(location.lat / GRID_TILE_SIZE),
-    col: Math.floor(location.lng / GRID_TILE_SIZE),
-  };
+const collectedCoins: { i: number; j: number; serial: number }[] = [];
+
+function updateInventoryDisplay(
+  addedCoin?: { i: number; j: number; serial: number },
+) {
+  if (addedCoin) {
+    collectedCoins.push(addedCoin);
+    totalCoins++;
+  }
+  inventoryPanel.innerHTML = collectedCoins
+    .map((coin) => `${coin.i}:${coin.j}#${coin.serial}`)
+    .join(", ") || "Empty";
 }
 
 const playerTile = getTileIndices(STARTING_POSITION);
@@ -123,7 +175,7 @@ for (
     col++
   ) {
     if (luck([row, col].toString()) < CACHE_PROBABILITY) {
-      createCache({ row, col });
+      createCache(getOrCreateTile(row, col));
     }
   }
 }
