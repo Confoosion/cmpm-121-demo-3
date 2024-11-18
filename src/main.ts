@@ -19,6 +19,32 @@ interface GridTile {
   col: number;
 }
 
+class Cache {
+  row: number;
+  col: number;
+  coins: { i: number; j: number; serial: number }[];
+
+  constructor(row: number, col: number, initialCoins: number) {
+    this.row = row;
+    this.col = col;
+    this.coins = Array.from(
+      { length: initialCoins },
+      (_, serial) => ({ i: row, j: col, serial }),
+    );
+  }
+
+  toMomento(): string {
+    return JSON.stringify(this.coins);
+  }
+
+  fromMomento(momento: string): void {
+    this.coins = JSON.parse(momento);
+  }
+}
+
+const activeCaches = new Map<string, Cache>();
+const savedCacheStates = new Map<string, string>();
+
 const mapInstance = leaflet.map(document.getElementById("map")!, {
   center: STARTING_POSITION,
   zoom: MAP_ZOOM_LEVEL,
@@ -59,6 +85,8 @@ const cacheIconConfig = leaflet.icon({
 
 const tileFlyweightMap = new Map<string, GridTile>();
 
+regenerateCaches();
+
 function getTileIndices(location: { lat: number; lng: number }): GridTile {
   return {
     row: Math.floor(location.lat / GRID_TILE_SIZE),
@@ -74,27 +102,22 @@ function getOrCreateTile(row: number, col: number): GridTile {
   return tileFlyweightMap.get(key)!;
 }
 
-function createCache(tile: GridTile) {
+function createCache(tile: GridTile): Cache {
+  const cacheKey = `${tile.row}:${tile.col}`;
   const cacheLocation = leaflet.latLng(
     (tile.row * GRID_TILE_SIZE + (tile.row + 1) * GRID_TILE_SIZE) / 2,
     (tile.col * GRID_TILE_SIZE + (tile.col + 1) * GRID_TILE_SIZE) / 2,
   );
 
+  const numCoins = Math.floor(Math.random() * 8) + 1;
+  const cache = new Cache(tile.row, tile.col, numCoins);
+
+  if (savedCacheStates.has(cacheKey)) {
+    cache.fromMomento(savedCacheStates.get(cacheKey)!);
+  }
+
   const cacheMarker = leaflet.marker(cacheLocation, { icon: cacheIconConfig });
   cacheMarker.addTo(mapInstance);
-
-  const coins = Array.from(
-    {
-      length: Math.floor(
-        luck([tile.row, tile.col, "initialValue"].toString()) * 10,
-      ),
-    },
-    (_, serial) => ({
-      i: tile.row,
-      j: tile.col,
-      serial,
-    }),
-  );
 
   cacheMarker.bindPopup(() => {
     const popupContent = document.createElement("div");
@@ -104,12 +127,12 @@ function createCache(tile: GridTile) {
         <div>Cache at "${tile.row}:${tile.col}". Available coins:</div>
         <ul id="availableCoins">
           ${
-        coins
+        cache.coins
           .map(
             (coin) => `
-              <li>${coin.i}:${coin.j}#${coin.serial} 
-                <button data-serial="${coin.serial}" class="takeCoinButton">Take</button>
-              </li>`,
+                  <li>${coin.i}:${coin.j}#${coin.serial} 
+                    <button data-serial="${coin.serial}" class="takeCoinButton">Take</button>
+                  </li>`,
           )
           .join("")
       }
@@ -120,10 +143,12 @@ function createCache(tile: GridTile) {
         .forEach((button) => {
           button.addEventListener("click", () => {
             const serial = parseInt(button.dataset.serial!);
-            const coinIndex = coins.findIndex((coin) => coin.serial === serial);
+            const coinIndex = cache.coins.findIndex(
+              (coin) => coin.serial === serial,
+            );
 
             if (coinIndex !== -1) {
-              const [coin] = coins.splice(coinIndex, 1);
+              const [coin] = cache.coins.splice(coinIndex, 1);
               updateInventoryDisplay(coin);
               updateDisplay();
             }
@@ -135,7 +160,7 @@ function createCache(tile: GridTile) {
           if (totalCoins > 0) {
             const lastCollectedCoin = collectedCoins.pop();
             if (lastCollectedCoin) {
-              coins.push(lastCollectedCoin);
+              cache.coins.push(lastCollectedCoin);
               totalCoins--;
               updateInventoryDisplay();
               updateDisplay();
@@ -147,6 +172,9 @@ function createCache(tile: GridTile) {
     updateDisplay();
     return popupContent;
   });
+
+  activeCaches.set(cacheKey, cache);
+  return cache;
 }
 
 const collectedCoins: { i: number; j: number; serial: number }[] = [];
@@ -163,29 +191,42 @@ function updateInventoryDisplay(
     .join(", ") || "Empty";
 }
 
-const playerTile = getTileIndices(STARTING_POSITION);
-for (
-  let row = playerTile.row - SEARCH_RADIUS;
-  row <= playerTile.row + SEARCH_RADIUS;
-  row++
-) {
+function regenerateCaches() {
+  const playerTile = getTileIndices(playerMarker.getLatLng());
+  const newActiveCaches = new Map<string, Cache>();
+
   for (
-    let col = playerTile.col - SEARCH_RADIUS;
-    col <= playerTile.col + SEARCH_RADIUS;
-    col++
+    let row = playerTile.row - SEARCH_RADIUS;
+    row <= playerTile.row + SEARCH_RADIUS;
+    row++
   ) {
-    if (luck([row, col].toString()) < CACHE_PROBABILITY) {
-      createCache(getOrCreateTile(row, col));
+    for (
+      let col = playerTile.col - SEARCH_RADIUS;
+      col <= playerTile.col + SEARCH_RADIUS;
+      col++
+    ) {
+      const cacheKey = `${row}:${col}`;
+      if (!activeCaches.has(cacheKey)) {
+        if (luck([row, col].toString()) < CACHE_PROBABILITY) {
+          const newCache = createCache(getOrCreateTile(row, col));
+          newActiveCaches.set(cacheKey, newCache);
+        }
+      } else {
+        newActiveCaches.set(cacheKey, activeCaches.get(cacheKey)!);
+      }
     }
   }
-}
 
-const btnSensor = document.getElementById("sensor")!;
-const btnNorth = document.getElementById("north")!;
-const btnSouth = document.getElementById("south")!;
-const btnWest = document.getElementById("west")!;
-const btnEast = document.getElementById("east")!;
-const btnReset = document.getElementById("reset")!;
+  // Save states of caches that are no longer active
+  activeCaches.forEach((cache, key) => {
+    if (!newActiveCaches.has(key)) {
+      savedCacheStates.set(key, cache.toMomento());
+    }
+  });
+
+  activeCaches.clear();
+  newActiveCaches.forEach((cache, key) => activeCaches.set(key, cache));
+}
 
 const MOVE_STEP = GRID_TILE_SIZE;
 
@@ -197,19 +238,32 @@ function movePlayer(deltaLat: number, deltaLng: number) {
   );
   playerMarker.setLatLng(newPos);
   mapInstance.panTo(newPos);
+  regenerateCaches();
 }
 
-btnSensor.addEventListener("click", () => {
+document.getElementById("sensor")!.addEventListener("click", () => {
   playerMarker.setLatLng(STARTING_POSITION);
   mapInstance.setView(STARTING_POSITION, MAP_ZOOM_LEVEL);
 });
 
-btnNorth.addEventListener("click", () => movePlayer(MOVE_STEP, 0));
-btnSouth.addEventListener("click", () => movePlayer(-MOVE_STEP, 0));
-btnWest.addEventListener("click", () => movePlayer(0, -MOVE_STEP));
-btnEast.addEventListener("click", () => movePlayer(0, MOVE_STEP));
+document.getElementById("north")!.addEventListener(
+  "click",
+  () => movePlayer(MOVE_STEP, 0),
+);
+document.getElementById("south")!.addEventListener(
+  "click",
+  () => movePlayer(-MOVE_STEP, 0),
+);
+document.getElementById("west")!.addEventListener(
+  "click",
+  () => movePlayer(0, -MOVE_STEP),
+);
+document.getElementById("east")!.addEventListener(
+  "click",
+  () => movePlayer(0, MOVE_STEP),
+);
 
-btnReset.addEventListener("click", () => {
+document.getElementById("reset")!.addEventListener("click", () => {
   playerMarker.setLatLng(STARTING_POSITION);
   mapInstance.setView(STARTING_POSITION, MAP_ZOOM_LEVEL);
   totalCoins = 0;
