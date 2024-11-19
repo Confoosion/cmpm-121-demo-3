@@ -45,6 +45,8 @@ class Cache {
 const activeCaches = new Map<string, Cache>();
 const savedCacheStates = new Map<string, string>();
 
+const PLAYER_HISTORY_KEY = "playerHistory";
+
 const mapInstance = leaflet.map(document.getElementById("map")!, {
   center: STARTING_POSITION,
   zoom: MAP_ZOOM_LEVEL,
@@ -86,6 +88,21 @@ const cacheIconConfig = leaflet.icon({
 const tileFlyweightMap = new Map<string, GridTile>();
 
 regenerateCaches();
+
+const playerHistory = new leaflet.Polyline([], { color: "blue" }).addTo(
+  mapInstance,
+);
+
+const savedHistory = localStorage.getItem(PLAYER_HISTORY_KEY);
+if (savedHistory) {
+  const parsedHistory = JSON.parse(savedHistory);
+  playerHistory.setLatLngs(parsedHistory);
+  if (parsedHistory.length > 0) {
+    const lastPosition = parsedHistory[parsedHistory.length - 1];
+    playerMarker.setLatLng(lastPosition);
+    mapInstance.setView(lastPosition, MAP_ZOOM_LEVEL);
+  }
+}
 
 function getTileIndices(location: { lat: number; lng: number }): GridTile {
   return {
@@ -228,8 +245,6 @@ function regenerateCaches() {
   newActiveCaches.forEach((cache, key) => activeCaches.set(key, cache));
 }
 
-const MOVE_STEP = GRID_TILE_SIZE;
-
 function movePlayer(deltaLat: number, deltaLng: number) {
   const currentPos = playerMarker.getLatLng();
   const newPos = leaflet.latLng(
@@ -238,34 +253,65 @@ function movePlayer(deltaLat: number, deltaLng: number) {
   );
   playerMarker.setLatLng(newPos);
   mapInstance.panTo(newPos);
+
+  // Update player history
+  playerHistory.addLatLng(newPos);
+  localStorage.setItem(
+    PLAYER_HISTORY_KEY,
+    JSON.stringify(playerHistory.getLatLngs()),
+  );
+
   regenerateCaches();
 }
 
 document.getElementById("sensor")!.addEventListener("click", () => {
-  playerMarker.setLatLng(STARTING_POSITION);
-  mapInstance.setView(STARTING_POSITION, MAP_ZOOM_LEVEL);
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition((position) => {
+      const { latitude, longitude } = position.coords;
+      const newPos = leaflet.latLng(latitude, longitude);
+      playerMarker.setLatLng(newPos);
+      mapInstance.panTo(newPos);
+
+      playerHistory.addLatLng(newPos);
+      localStorage.setItem(
+        PLAYER_HISTORY_KEY,
+        JSON.stringify(playerHistory.getLatLngs()),
+      );
+      regenerateCaches();
+    });
+  } else {
+    alert("Geolocation is not supported by your browser.");
+  }
 });
 
 document.getElementById("north")!.addEventListener(
   "click",
-  () => movePlayer(MOVE_STEP, 0),
+  () => movePlayer(GRID_TILE_SIZE, 0),
 );
 document.getElementById("south")!.addEventListener(
   "click",
-  () => movePlayer(-MOVE_STEP, 0),
-);
-document.getElementById("west")!.addEventListener(
-  "click",
-  () => movePlayer(0, -MOVE_STEP),
+  () => movePlayer(-GRID_TILE_SIZE, 0),
 );
 document.getElementById("east")!.addEventListener(
   "click",
-  () => movePlayer(0, MOVE_STEP),
+  () => movePlayer(0, GRID_TILE_SIZE),
+);
+document.getElementById("west")!.addEventListener(
+  "click",
+  () => movePlayer(0, -GRID_TILE_SIZE),
 );
 
 document.getElementById("reset")!.addEventListener("click", () => {
-  playerMarker.setLatLng(STARTING_POSITION);
-  mapInstance.setView(STARTING_POSITION, MAP_ZOOM_LEVEL);
-  totalCoins = 0;
-  inventoryPanel.innerHTML = "Empty";
+  if (confirm("Are you sure you want to erase all game data?")) {
+    // Reset game state
+    playerMarker.setLatLng(STARTING_POSITION);
+    mapInstance.setView(STARTING_POSITION, MAP_ZOOM_LEVEL);
+    playerHistory.setLatLngs([]);
+    localStorage.removeItem(PLAYER_HISTORY_KEY);
+
+    totalCoins = 0;
+    collectedCoins.length = 0;
+    inventoryPanel.innerHTML = "Empty";
+    alert("Game state has been reset.");
+  }
 });
